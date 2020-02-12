@@ -1,8 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2014 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
- * All rights reserved.
+ * Copyright (c) 2019 Vincenzo Maffione <vmaffione@freebsd.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,11 +27,21 @@
  * $FreeBSD$
  */
 
-#ifndef _SMBIOSTBL_H_
-#define _SMBIOSTBL_H_
+#ifndef _DEBUG_H_
+#define _DEBUG_H_
 
-struct vmctx;
 
-int	smbios_build(struct vmctx *ctx);
+extern int raw_stdio;
 
-#endif /* _SMBIOSTBL_H_ */
+#define FPRINTLN(filep, fmt, arg...)				\
+	do {							\
+		if (raw_stdio)					\
+			fprintf(filep, fmt "\r\n", ##arg);	\
+		else						\
+			fprintf(filep, fmt "\n", ##arg);	\
+	} while (0)
+
+#define PRINTLN(fmt, arg...)	FPRINTLN(stdout, fmt, ##arg)
+#define EPRINTLN(fmt, arg...)	FPRINTLN(stderr, fmt, ##arg)
+
+#endif

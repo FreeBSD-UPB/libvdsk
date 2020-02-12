@@ -25,11 +25,11 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: head/usr.sbin/bhyve/block_if.c 344159 2019-02-15 16:20:21Z rgrimes $
+ * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/usr.sbin/bhyve/block_if.c 344159 2019-02-15 16:20:21Z rgrimes $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #ifndef WITHOUT_CAPSICUM
@@ -60,6 +60,7 @@ __FBSDID("$FreeBSD: head/usr.sbin/bhyve/block_if.c 344159 2019-02-15 16:20:21Z r
 #include <machine/atomic.h>
 
 #include "bhyverun.h"
+#include "debug.h"
 #include "mevent.h"
 #include "block_if.h"
 
@@ -88,7 +89,7 @@ struct blockif_elem {
 	struct blockif_req  *be_req;
 	enum blockop	     be_op;
 	enum blockstat	     be_status;
-	pthread_t	     be_tid;
+	pthread_t            be_tid;
 	off_t		     be_block;
 };
 
@@ -320,6 +321,7 @@ blockif_open(const char *optstr, const char *ident)
 	char tname[MAXCOMLEN + 1];
 	char *nopt, *xopts, *cp;
 	struct blockif_ctxt *bc;
+	struct stat sbuf;
 	off_t psectsz, psectoff;
 	int extra, i, sectsz;
 	int nocache, sync, ro, ssopt, pssopt;
@@ -356,7 +358,7 @@ blockif_open(const char *optstr, const char *ident)
 		else if (sscanf(cp, "sectorsize=%d", &ssopt) == 1)
 			pssopt = ssopt;
 		else {
-			fprintf(stderr, "Invalid device option \"%s\"\n", cp);
+			EPRINTLN("Invalid device option \"%s\"", cp);
 			goto err;
 		}
 	}
@@ -398,7 +400,7 @@ blockif_open(const char *optstr, const char *ident)
 	if (ssopt != 0) {
 		if (!powerof2(ssopt) || !powerof2(pssopt) || ssopt < 512 ||
 		    ssopt > pssopt) {
-			fprintf(stderr, "Invalid sector size %d/%d\n",
+			EPRINTLN("Invalid sector size %d/%d",
 			    ssopt, pssopt);
 			goto err;
 		}
@@ -410,11 +412,13 @@ blockif_open(const char *optstr, const char *ident)
 		 * Validate that the emulated sector size complies with this
 		 * requirement.
 		 */
-		if (ssopt < sectsz || (ssopt % sectsz) != 0) {
-			fprintf(stderr, "Sector size %d incompatible "
-			    "with underlying device sector size %d\n",
-			    ssopt, sectsz);
-			goto err;
+		if (S_ISCHR(sbuf.st_mode)) {
+			if (ssopt < sectsz || (ssopt % sectsz) != 0) {
+				EPRINTLN("Sector size %d incompatible "
+				    "with underlying device sector size %d",
+				    ssopt, sectsz);
+				goto err;
+			}
 		}
 
 		sectsz = ssopt;

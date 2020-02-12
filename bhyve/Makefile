@@ -1,5 +1,5 @@
 #
-# $FreeBSD: head/usr.sbin/bhyve/Makefile 339681 2018-10-24 08:45:33Z bz $
+# $FreeBSD$
 #
 
 LDADD=-lvmmapi -lmd -lpthread -lz -lsbuf -lcam -lvdsk -lcrypto
@@ -8,6 +8,7 @@ MK_INET_SUPPORT=yes
 MK_INET6_SUPPORT=yes
 MK_OPENSSL=yes
 SRCTOP=/usr/src
+
 
 CFLAGS+=-I${SRCTOP}/sys
 .PATH:  ${SRCTOP}/sys/cam/ctl
@@ -40,6 +41,7 @@ SRCS=	\
 	mem.c			\
 	mevent.c		\
 	mptbl.c			\
+	net_backends.c		\
 	net_utils.c		\
 	pci_ahci.c		\
 	pci_e82545.c		\
