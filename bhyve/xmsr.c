@@ -25,11 +25,11 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: head/usr.sbin/bhyve/xmsr.c 326276 2017-11-27 15:37:16Z pfg $
+ * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/usr.sbin/bhyve/xmsr.c 326276 2017-11-27 15:37:16Z pfg $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 
@@ -43,6 +43,7 @@ __FBSDID("$FreeBSD: head/usr.sbin/bhyve/xmsr.c 326276 2017-11-27 15:37:16Z pfg $
 #include <stdlib.h>
 #include <string.h>
 
+#include "debug.h"
 #include "xmsr.h"
 
 static int cpu_vendor_intel, cpu_vendor_amd;
@@ -227,7 +228,7 @@ init_msr(void)
 	} else if (strcmp(cpu_vendor, "GenuineIntel") == 0) {
 		cpu_vendor_intel = 1;
 	} else {
-		fprintf(stderr, "Unknown cpu vendor \"%s\"\n", cpu_vendor);
+		EPRINTLN("Unknown cpu vendor \"%s\"", cpu_vendor);
 		error = -1;
 	}
 	return (error);

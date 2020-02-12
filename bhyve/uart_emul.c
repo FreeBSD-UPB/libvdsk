@@ -26,11 +26,11 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: head/usr.sbin/bhyve/uart_emul.c 345158 2019-03-14 21:08:48Z cem $
+ * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/usr.sbin/bhyve/uart_emul.c 345158 2019-03-14 21:08:48Z cem $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <dev/ic/ns16550.h>
@@ -54,6 +54,7 @@ __FBSDID("$FreeBSD: head/usr.sbin/bhyve/uart_emul.c 345158 2019-03-14 21:08:48Z 
 
 #include "mevent.h"
 #include "uart_emul.h"
+#include "debug.h"
 
 #define	COM1_BASE      	0x3F8
 #define	COM1_IRQ	4
@@ -152,6 +153,7 @@ ttyopen(struct ttyfd *tf)
 		tio_stdio_orig = orig;
 		atexit(ttyclose);
 	}
+	raw_stdio = 1;
 }
 
 static int
@@ -678,8 +680,13 @@ uart_tty_backend(struct uart_softc *sc, const char *opts)
 	int fd;
 
 	fd = open(opts, O_RDWR | O_NONBLOCK);
-	if (fd < 0 || !isatty(fd))
+	if (fd < 0)
 		return (-1);
+
+	if (!isatty(fd)) {
+		close(fd);
+		return (-1);
+	}
 
 	sc->tty.rfd = sc->tty.wfd = fd;
 	sc->tty.opened = true;

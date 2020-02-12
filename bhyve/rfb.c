@@ -28,7 +28,7 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/usr.sbin/bhyve/rfb.c 343068 2019-01-16 00:39:23Z araujo $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #ifndef WITHOUT_CAPSICUM
@@ -63,6 +63,7 @@ __FBSDID("$FreeBSD: head/usr.sbin/bhyve/rfb.c 343068 2019-01-16 00:39:23Z araujo
 #include <zlib.h>
 
 #include "bhyvegc.h"
+#include "debug.h"
 #include "console.h"
 #include "rfb.h"
 #include "sockstream.h"
@@ -72,8 +73,8 @@ __FBSDID("$FreeBSD: head/usr.sbin/bhyve/rfb.c 343068 2019-01-16 00:39:23Z araujo
 #endif
 
 static int rfb_debug = 0;
-#define	DPRINTF(params) if (rfb_debug) printf params
-#define	WPRINTF(params) printf params
+#define	DPRINTF(params) if (rfb_debug) PRINTLN params
+#define	WPRINTF(params) PRINTLN params
 
 #define AUTH_LENGTH	16
 #define PASSWD_LENGTH	8
@@ -356,7 +357,7 @@ rfb_send_rect(struct rfb_softc *rc, int cfd, struct bhyvegc_image *gc,
 			/* Compress with zlib */
 			err = deflate(&rc->zstream, Z_SYNC_FLUSH);
 			if (err != Z_OK) {
-				WPRINTF(("zlib[rect] deflate err: %d\n", err));
+				WPRINTF(("zlib[rect] deflate err: %d", err));
 				rc->enc_zlib_ok = false;
 				deflateEnd(&rc->zstream);
 				goto doraw;
@@ -440,7 +441,7 @@ rfb_send_all(struct rfb_softc *rc, int cfd, struct bhyvegc_image *gc)
 		/* Compress with zlib */
 		err = deflate(&rc->zstream, Z_SYNC_FLUSH);
 		if (err != Z_OK) {
-			WPRINTF(("zlib deflate err: %d\n", err));
+			WPRINTF(("zlib deflate err: %d", err));
 			rc->enc_zlib_ok = false;
 			deflateEnd(&rc->zstream);
 			goto doraw;
@@ -878,7 +879,7 @@ rfb_handle(struct rfb_softc *rc, int cfd)
 	for (;;) {
 		len = read(cfd, buf, 1);
 		if (len <= 0) {
-			DPRINTF(("rfb client exiting\r\n"));
+			DPRINTF(("rfb client exiting"));
 			break;
 		}
 
@@ -902,7 +903,7 @@ rfb_handle(struct rfb_softc *rc, int cfd)
 			rfb_recv_cuttext_msg(rc, cfd);
 			break;
 		default:
-			WPRINTF(("rfb unknown cli-code %d!\n", buf[0] & 0xff));
+			WPRINTF(("rfb unknown cli-code %d!", buf[0] & 0xff));
 			goto done;
 		}
 	}
@@ -969,7 +970,7 @@ rfb_init(char *hostname, int port, int wait, char *password)
 	int e;
 	char servname[6];
 	struct rfb_softc *rc;
-	struct addrinfo *ai;
+	struct addrinfo *ai = NULL;
 	struct addrinfo hints;
 	int on = 1;
 #ifndef WITHOUT_CAPSICUM
@@ -984,6 +985,7 @@ rfb_init(char *hostname, int port, int wait, char *password)
 	                     sizeof(uint32_t));
 	rc->crc_width = RFB_MAX_WIDTH;
 	rc->crc_height = RFB_MAX_HEIGHT;
+	rc->sfd = -1;
 
 	rc->password = password;
 
@@ -1002,29 +1004,26 @@ rfb_init(char *hostname, int port, int wait, char *password)
 	hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | AI_PASSIVE;
 
 	if ((e = getaddrinfo(hostname, servname, &hints, &ai)) != 0) {
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(e));
-		return(-1);
+		EPRINTLN("getaddrinfo: %s", gai_strerror(e));
+		goto error;
 	}
 
 	rc->sfd = socket(ai->ai_family, ai->ai_socktype, 0);
 	if (rc->sfd < 0) {
 		perror("socket");
-		freeaddrinfo(ai);
-		return (-1);
+		goto error;
 	}
 
 	setsockopt(rc->sfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
 
 	if (bind(rc->sfd, ai->ai_addr, ai->ai_addrlen) < 0) {
 		perror("bind");
-		freeaddrinfo(ai);
-		return (-1);
+		goto error;
 	}
 
 	if (listen(rc->sfd, 1) < 0) {
 		perror("listen");
-		freeaddrinfo(ai);
-		return (-1);
+		goto error;
 	}
 
 #ifndef WITHOUT_CAPSICUM
@@ -1045,7 +1044,7 @@ rfb_init(char *hostname, int port, int wait, char *password)
 	pthread_set_name_np(rc->tid, "rfb");
 
 	if (wait) {
-		DPRINTF(("Waiting for rfb client...\n"));
+		DPRINTF(("Waiting for rfb client..."));
 		pthread_mutex_lock(&rc->mtx);
 		pthread_cond_wait(&rc->cond, &rc->mtx);
 		pthread_mutex_unlock(&rc->mtx);
@@ -1053,4 +1052,14 @@ rfb_init(char *hostname, int port, int wait, char *password)
 
 	freeaddrinfo(ai);
 	return (0);
+
+ error:
+	if (ai != NULL)
+		freeaddrinfo(ai);
+	if (rc->sfd != -1)
+		close(rc->sfd);
+	free(rc->crc);
+	free(rc->crc_tmp);
+	free(rc);
+	return (-1);
 }

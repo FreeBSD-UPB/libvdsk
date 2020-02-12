@@ -27,7 +27,7 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/usr.sbin/bhyve/smbiostbl.c 343642 2019-02-01 03:09:11Z araujo $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 
@@ -43,6 +43,7 @@ __FBSDID("$FreeBSD: head/usr.sbin/bhyve/smbiostbl.c 343642 2019-02-01 03:09:11Z 
 #include <vmmapi.h>
 
 #include "bhyverun.h"
+#include "debug.h"
 #include "smbiostbl.h"
 
 #define	MB			(1024*1024)
@@ -796,7 +797,7 @@ smbios_build(struct vmctx *ctx)
 
 	startaddr = paddr_guest2host(ctx, SMBIOS_BASE, SMBIOS_MAX_LENGTH);
 	if (startaddr == NULL) {
-		fprintf(stderr, "smbios table requires mapped mem\n");
+		EPRINTLN("smbios table requires mapped mem");
 		return (ENOMEM);
 	}
 

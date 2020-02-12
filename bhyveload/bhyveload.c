@@ -25,7 +25,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: head/usr.sbin/bhyveload/bhyveload.c 338418 2018-09-01 02:23:45Z kevans $
+ * $FreeBSD$
  */
 
 /*-
@@ -53,11 +53,11 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD: head/usr.sbin/bhyveload/bhyveload.c 338418 2018-09-01 02:23:45Z kevans $
+ * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD: head/usr.sbin/bhyveload/bhyveload.c 338418 2018-09-01 02:23:45Z kevans $");
+__FBSDID("$FreeBSD$");
 
 #include <sys/ioctl.h>
 #include <sys/stat.h>
@@ -313,7 +313,6 @@ cb_diskread(void *arg, int unit, uint64_t from, void *to, size_t size,
 static int
 cb_diskioctl(void *arg, int unit, u_long cmd, void *data)
 {
-
 	if (unit < 0 || unit >= ndisks)
 		return (EBADF);
 
