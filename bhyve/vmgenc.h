@@ -1,8 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
  *
- * Copyright (c) 2011 NetApp, Inc.
- * All rights reserved.
+ * Copyright 2020 Conrad Meyer <cem@FreeBSD.org>.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -13,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY NETAPP, INC ``AS IS'' AND
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED.  IN NO EVENT SHALL NETAPP, INC OR CONTRIBUTORS BE LIABLE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
  * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
  * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
  * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
@@ -27,29 +26,6 @@
  *
  * $FreeBSD$
  */
-
-#ifndef	_FBSDRUN_H_
-#define	_FBSDRUN_H_
-
-#define	VMEXIT_CONTINUE		(0)
-#define	VMEXIT_ABORT		(-1)
-
-struct vmctx;
-extern int guest_ncpus;
-extern uint16_t cores, sockets, threads;
-extern char *guest_uuid_str;
-extern const char *vmname;
-
-void *paddr_guest2host(struct vmctx *ctx, uintptr_t addr, size_t len);
-#ifdef BHYVE_SNAPSHOT
-uintptr_t paddr_host2guest(struct vmctx *ctx, void *addr);
-#endif
-
-void fbsdrun_set_capabilities(struct vmctx *ctx, int cpu);
-void fbsdrun_addcpu(struct vmctx *ctx, int fromcpu, int newcpu, uint64_t rip);
-int  fbsdrun_muxed(void);
-int  fbsdrun_vmexit_on_hlt(void);
-int  fbsdrun_vmexit_on_pause(void);
-int  fbsdrun_disable_x2apic(void);
-int  fbsdrun_virtio_msix(void);
-#endif
+#pragma once
+void	vmgenc_init(struct vmctx *);
+void	vmgenc_write_dsdt(void);
