@@ -761,11 +761,11 @@ vmdk_readv(struct vdsk *vdsk, const struct iovec *iov,
 						to_read = iov_rem;
 					else
 						to_read = bytes_to_read - total;
-						read = pread(vdsk->fd,
-							iov[ioc].iov_base,
-							to_read,
-							cluster_offset +
-							offset_in_cluster);
+					read = pread(vdsk->fd,
+						iov[ioc].iov_base,
+						to_read,
+						cluster_offset +
+						offset_in_cluster);
 				}
 
 			DPRINTF("%s: read %lx ioc %lu bytes_to_read %lx "

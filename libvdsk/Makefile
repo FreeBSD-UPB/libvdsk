@@ -11,6 +11,7 @@ SRCS+=	\
 	qcow.c \
 	raw.c \
 	vhd.c \
+	vdi.c \
 	vmdk.c
 
 DEBUG_FLAGS=-O0 -gdwarf-2 -DSMP
