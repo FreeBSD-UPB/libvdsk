@@ -28,7 +28,10 @@
 #ifndef __VDI_H__
 #define	__VDI_H__
 
+#include <pthread.h>
 #include <uuid.h>
+
+#include "rangelock.h"
 
 #define VDI_SIGNATURE 0xbeda107f
 #define VDI_SECTOR_SIZE 512
@@ -43,7 +46,7 @@ struct vdi_header {
 	uint32_t	signature; /* Should be VDI_SIGNATURE */
 	uint16_t	version_major; /* Image file version */
 	uint16_t	version_minor;
-	
+
 	/* HEADER */
 	uint32_t	header_size; /* Size of header in bytes */
 	uint32_t	image_type; /* Preallocated or dynamically growing image */
@@ -71,9 +74,10 @@ struct vdidsk {
 	struct vdi_header header;
 	struct vdsk *vdsk;
 	uint32_t 	*block_array;
-	
+
 #ifdef SMP
-	pthread_rwlock_t lock;
+	pthread_mutex_t lock;
+	struct range_lock_root range_root;
 #endif
 };
 

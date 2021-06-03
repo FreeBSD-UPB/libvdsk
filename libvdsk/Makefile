@@ -12,6 +12,7 @@ SRCS+=	\
 	raw.c \
 	vhd.c \
 	vdi.c \
+	rangelock.c \
 	vmdk.c
 
 DEBUG_FLAGS=-O0 -gdwarf-2 -DSMP
