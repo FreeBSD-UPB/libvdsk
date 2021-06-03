@@ -60,8 +60,8 @@ pread_all(int fd, void *buf, size_t nbytes, off_t offset)
 	
 	while (read < nbytes) {
 		ret = pread(fd, (char *) buf + read, nbytes - read, offset + read);
-		if (ret < 1)
-			return ret;
+		if (ret <= 0)
+			return -1;
 		read += ret;
 	}
 	
@@ -69,19 +69,107 @@ pread_all(int fd, void *buf, size_t nbytes, off_t offset)
 }
 
 static ssize_t
-pwrite_all (int fd, const void *buf, size_t nbytes, off_t offset)
+pwrite_all(int fd, const void *buf, size_t nbytes, off_t offset)
 {
 	ssize_t ret = 0;
 	size_t written = 0;
 	
 	while (written < nbytes) {
 		ret = pwrite(fd, (const char *) buf + written, nbytes - written, offset + written);
-		if (ret < 1)
-			return ret;
+		if (ret <= 0)
+			return -1;
 		written += ret;
 	}
 	
 	return written;
+}
+
+static ssize_t
+preadv_all(int fd, struct iovec *iov, int iovcnt, off_t offset)
+{
+	ssize_t ret = 0;
+	size_t read = 0;
+	int index = 0;
+	
+	for (;;) {
+		ret = preadv(fd, iov + index, iovcnt - index, offset + read);
+		DPRINTF("index %d iovcnt %d read %#lx read_total %#lx offset %#lx\r\n",
+			index, iovcnt, ret, read, offset);
+		if (ret <= 0)
+			return -1;
+		read += ret;
+		while (index < iovcnt && (size_t) ret >= iov[index].iov_len) {
+			ret -= iov[index].iov_len;
+			index++;
+		}
+		if (index == iovcnt)
+			return read;
+		iov[index].iov_base = (char *) iov[index].iov_base + ret;
+		iov[index].iov_len -= ret;
+	}
+}
+
+static ssize_t
+pwritev_all(int fd, struct iovec *iov, int iovcnt, off_t offset)
+{
+	ssize_t ret = 0;
+	size_t written = 0;
+	int index = 0;
+	
+	for (;;) {
+		ret = pwritev(fd, iov + index, iovcnt - index, offset + written);
+		if (ret <= 0)
+			return -1;
+		written += ret;
+		while (index < iovcnt && (size_t) ret >= iov[index].iov_len) {
+			ret -= iov[index].iov_len;
+			index++;
+		}
+		if (index == iovcnt)
+			return written;
+		iov[index].iov_base = (char *) iov[index].iov_base + ret;
+		iov[index].iov_len -= ret;
+	}
+}
+
+static struct iovec *
+clone_iov(const struct iovec *iov, int *start, size_t *start_off, size_t nbytes, int *iovcnt)
+{
+	struct iovec *new_iov;
+	size_t count = 0;
+	
+	*iovcnt = 1;
+	count += iov[*start].iov_len - *start_off;
+	DPRINTF("CLONE: count: %#lx iovcnt: %u\r\n", count, *iovcnt);
+	while (count < nbytes) {
+		count += iov[*iovcnt + *start].iov_len;
+		(*iovcnt)++;
+		DPRINTF("CLONE: count: %#lx iovcnt: %u\r\n", count, *iovcnt);
+	}
+	
+	
+	new_iov = malloc(*iovcnt * sizeof(*new_iov));
+	if (new_iov == NULL)
+		return NULL;
+	memcpy(new_iov, &iov[*start], *iovcnt * sizeof(*new_iov));
+	
+	new_iov[0].iov_base = (char *) new_iov[0].iov_base + *start_off;
+	new_iov[0].iov_len -= *start_off;
+	
+	new_iov[*iovcnt - 1].iov_len -= (count - nbytes);
+	
+	/* Update starting iovec index and offset */
+	*start += *iovcnt - 1;
+	/* If remaining bytes are zero, go to the next iovec */
+	if (count - nbytes == 0) {
+		*start += 1;
+		*start_off = 0;
+	}
+	else {
+		*start_off = new_iov[*iovcnt - 1].iov_len;
+	}
+	
+	return new_iov;
 }
 
 static struct vdidsk*
@@ -254,13 +342,13 @@ static ssize_t
 vdi_readv(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 {
 	struct vdidsk *vdidsk = vdi_deref(vdsk);
+	struct iovec *block_iov;
 	off_t read_off;
 	ssize_t bytes_read;
-	size_t rem, bytes_to_read, bytes_remaining, iov_offset, nbytes;
-	uint32_t block_index, iov_index, block_offset, block_val;
+	size_t rem, bytes_to_read, iov_offset;
+	uint32_t block_index, block_offset, block_val;
 	uint32_t offset_data, block_size;
-	int i;
-	char *base;
+	int i, iov_index, nr_iov;
 
 	offset_data = vdidsk->header.offset_data;
 	block_size = vdidsk->header.block_size;
@@ -271,9 +359,11 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 
 	lock_rdlock(&vdidsk->lock);
 	
-	for (i = 0; i < iovcnt; i++)
-		rem += iov[i].iov_len;
 	DPRINTF("=================================\r\n");
+	for (i = 0; i < iovcnt; i++) {
+		rem += iov[i].iov_len;
+		DPRINTF("IOV: %u - len: %#lx\r\n", i, iov[i].iov_len);
+	}
 	DPRINTF("TRYING TO %s\r\n", __func__);
 	DPRINTF("iovcnt %d\r\n", iovcnt);
 	DPRINTF("sum %ld\r\n", rem);
@@ -298,14 +388,13 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 		block_offset = offset % block_size;
 		bytes_to_read = MIN((size_t) block_size - block_offset, rem);
 		
-		bytes_remaining = bytes_to_read;
-		
 		block_val = vdidsk->block_array[block_index];
 		
 		DPRINTF("Block index: %u value : %u\r\n", block_index, block_val);
 		
 		if (block_val == VDI_BLOCK_FREE || block_val == VDI_BLOCK_ZERO) {
 			/* Unallocated or zero block */
+			size_t bytes_remaining = bytes_to_read;
 			DPRINTF("Accessed %s block %u\r\n",
 				block_val == VDI_BLOCK_FREE ? "unallocated" : "free", block_index);
 			while (bytes_remaining > 0) {
@@ -325,32 +414,31 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 			DPRINTF("Accessed block %u phys offset: %#lx block offset: %#x\r\n",
 				block_index, (off_t) block_val * block_size + offset_data, block_offset);
 
-			while (bytes_remaining > 0) {
-				nbytes = MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining);
-				read_off = (off_t) block_val * block_size + offset_data + block_offset;
-				base = (char *) iov[iov_index].iov_base + iov_offset;
-				bytes_read = pread_all(vdsk->fd, base, nbytes, read_off);
-				
-				DPRINTF("%s: read %#lx iov_index %u iov_len %#lx iov_offset "
-					"%#lx block_index %u bytes_to_read %#lx bytes_read_so_far %#lx\r\n",
-					__func__, bytes_read, iov_index, iov[iov_index].iov_len,
-					iov_offset, block_index, bytes_to_read,
-					bytes_to_read - bytes_remaining);
-				
-				if (bytes_read == -1) {
-					printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
-					lock_unlock(&vdidsk->lock);	
-					return -1;
-				}
-				
-				iov_offset += bytes_read;
-				if (iov_offset == iov[iov_index].iov_len) {
-					iov_index++;
-					iov_offset = 0;
-				}
-				block_offset += bytes_read;
-				bytes_remaining -= bytes_read;
+			DPRINTF("%s: cloning read iovs from iov_index %u and iov_offset %#lx bytes_to_read %#lx\r\n",
+					__func__, iov_index, iov_offset, bytes_to_read);
+
+			block_iov = clone_iov(iov, &iov_index, &iov_offset, bytes_to_read, &nr_iov);
+			if (block_iov == NULL) {
+				printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
+				lock_unlock(&vdidsk->lock);	
+				return -1;
 			}
+			
+			DPRINTF("%s: cloned %d read iovs successfully, now iov_index %u and iov_offset %#lx\r\n",
+					__func__, nr_iov, iov_index, iov_offset);
+			
+			read_off = (off_t) block_val * block_size + offset_data + block_offset;
+			bytes_read = preadv_all(vdsk->fd, block_iov, nr_iov, read_off);
+
+			if (bytes_read == -1) {
+				printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
+				lock_unlock(&vdidsk->lock);	
+				return -1;
+			}
+
+			DPRINTF("%s: read %#lx\r\n", __func__, bytes_read);
+			
+			free(block_iov);
 		}
 		rem -= bytes_to_read;
 		offset += bytes_to_read;
@@ -394,13 +482,13 @@ static ssize_t
 vdi_writev(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 {
 	struct vdidsk *vdidsk = vdi_deref(vdsk);
+	struct iovec *block_iov;
 	off_t write_off;
 	ssize_t bytes_written;
-	size_t rem, bytes_to_write, bytes_remaining, iov_offset, nbytes;
-	uint32_t block_index, iov_index, block_offset, block_val, *buf;
+	size_t rem, bytes_to_write, iov_offset, nbytes;
+	uint32_t block_index, block_offset, block_val, *buf;
 	uint32_t offset_data, block_size; 
-	int i, nr_allocated_blocks, starting_block_index;
-	char *base;
+	int i, iov_index, nr_iov, nr_allocated_blocks, starting_block_index;
 
 	offset_data = vdidsk->header.offset_data;
 	block_size = vdidsk->header.block_size;
@@ -413,9 +501,11 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 
 	lock_wrlock(&vdidsk->lock);
 	
-	for (i = 0; i < iovcnt; i++)
-		rem += iov[i].iov_len;
 	DPRINTF("=================================\r\n");
+	for (i = 0; i < iovcnt; i++) {
+		rem += iov[i].iov_len;
+		DPRINTF("IOV: %u - len: %#lx\r\n", i, iov[i].iov_len);
+	}
 	DPRINTF("TRYING TO %s\r\n", __func__);
 	DPRINTF("iovcnt %d\r\n", iovcnt);
 	DPRINTF("sum %ld\r\n", rem);
@@ -430,7 +520,7 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 
 	if (offset < 0) {
 		errno = EINVAL;
-		printf("Exit with offset < 0; offset = %ld\r\n", offset);
+		printf("VDI: Write with offset < 0; offset = %ld\r\n", offset);
 		lock_unlock(&vdidsk->lock);
 		return -1;
 	}
@@ -439,8 +529,6 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 		block_index = offset / block_size;
 		block_offset = offset % block_size;
 		bytes_to_write = MIN((size_t) block_size - block_offset, rem);
-		
-		bytes_remaining = bytes_to_write;
 		
 		block_val = vdidsk->block_array[block_index];
 		
@@ -480,33 +568,32 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 		DPRINTF("Accessed block %u phys offset: %#lx block offset: %#x\r\n",
 				block_index, (off_t) block_val * block_size + offset_data, block_offset);
 
-		while (bytes_remaining > 0) {
-			nbytes = MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining);
-			write_off = (off_t) block_val * block_size + offset_data + block_offset;
-			base = (char *) iov[iov_index].iov_base + iov_offset;
-			
-			bytes_written = pwrite_all(vdsk->fd, base, nbytes, write_off);
-			
-			DPRINTF("%s: wrote %#lx iov_index %u iov_len %#lx iov_offset "
-				"%#lx block_index %u bytes_to_write %#lx bytes_read_so_far %#lx\r\n",
-				__func__, bytes_written, iov_index, iov[iov_index].iov_len,
-				iov_offset, block_index, bytes_to_write,
-				bytes_to_write - bytes_remaining);
-			
-			if (bytes_written == -1) {
-				printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
-				lock_unlock(&vdidsk->lock);
-				return -1;
-			}
-			
-			iov_offset += bytes_written;
-			if (iov_offset == iov[iov_index].iov_len) {
-				iov_index++;
-				iov_offset = 0;
-			}
-			block_offset += bytes_written;
-			bytes_remaining -= bytes_written;
+		DPRINTF("%s: cloning write iovs from iov_index %u and iov_offset %#lx bytes_to_write %#lx\r\n",
+				__func__, iov_index, iov_offset, bytes_to_write);
+
+		block_iov = clone_iov(iov, &iov_index, &iov_offset, bytes_to_write, &nr_iov);
+		if (block_iov == NULL) {
+			printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
+			lock_unlock(&vdidsk->lock);	
+			return -1;
 		}
+		
+		DPRINTF("%s: cloned %d write iovs successfully, now iov_index %u and iov_offset %#lx\r\n",
+				__func__, nr_iov, iov_index, iov_offset);
+		
+		write_off = (off_t) block_val * block_size + offset_data + block_offset;
+		bytes_written = pwritev_all(vdsk->fd, block_iov, nr_iov, write_off);
+
+		if (bytes_written == -1) {
+			printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
+			lock_unlock(&vdidsk->lock);	
+			return -1;
+		}
+
+		DPRINTF("%s: wrote %#lx\r\n", __func__, bytes_written);
+		
+		free(block_iov);
+
 		rem -= bytes_to_write;
 		offset += bytes_to_write;
 	}
