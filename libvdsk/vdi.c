@@ -37,15 +37,52 @@ __FBSDID("$FreeBSD: user/marcel/libvdsk/libvdsk/vdi.c 286996 2015-08-21 15:20:01
 #include <stdlib.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #include "vdsk_int.h"
 #include "vdi.h"
 
-#define VDI_SIGNATURE 0xbeda107f
-#define VDI_SECTOR_SIZE 512
+#ifdef SMP
+	#define lock_rdlock(lock) pthread_rwlock_rdlock(lock);
+	#define lock_wrlock(lock) pthread_rwlock_wrlock(lock);
+	#define lock_unlock(lock) pthread_rwlock_unlock(lock);
+#else
+	#define lock_rdlock(lock)
+	#define lock_wrlock(lock)
+	#define lock_unlock(lock)
+#endif
 
-#define VDI_BLOCK_FREE ((uint32_t) ~0)
-#define VDI_BLOCK_ZERO ((uint32_t) ~1)
+static ssize_t
+pread_all(int fd, void *buf, size_t nbytes, off_t offset)
+{
+	ssize_t ret = 0;
+	size_t read = 0;
+	
+	while (read < nbytes) {
+		ret = pread(fd, (char *) buf + read, nbytes - read, offset + read);
+		if (ret < 1)
+			return ret;
+		read += ret;
+	}
+	
+	return read;
+}
+
+static ssize_t
+pwrite_all (int fd, const void *buf, size_t nbytes, off_t offset)
+{
+	ssize_t ret = 0;
+	size_t written = 0;
+	
+	while (written < nbytes) {
+		ret = pwrite(fd, (const char *) buf + written, nbytes - written, offset + written);
+		if (ret < 1)
+			return ret;
+		written += ret;
+	}
+	
+	return written;
+}
 
 static struct vdidsk*
 vdi_deref(struct vdsk *vdsk)
@@ -59,21 +96,21 @@ vdi_probe(struct vdsk *vdsk)
 	struct vdi_header header;
 	uint16_t version_major, version_minor;
 
-	if (pread(vdsk->fd, &header, sizeof(header), 0) != sizeof(header)) {
-		printf("Can't read VDI header\n");
+	if (pread_all(vdsk->fd, &header, sizeof(header), 0) != sizeof(header)) {
+		printf("VDI: Cannot read VDI header\n");
 		return EBADF;
 	}
 
 	/* Verify VDI signature */
 	if (le32toh(header.signature) != VDI_SIGNATURE) {
-		printf("Disk image is not VDI compatible\n");
+		printf("VDI: Disk image is not VDI compatible\n");
 		return EFTYPE;
 	}
 	
 	version_major = le16toh(header.version_major);
 	version_minor = le16toh(header.version_minor);
 	if (version_major != 1 || version_minor < 1) {
-		printf("VDI image version %d.%d not supported\n", version_major, version_minor);
+		printf("VDI: Image version %d.%d not supported\n", version_major, version_minor);
 		return ENXIO;
 	}
 
@@ -85,17 +122,19 @@ vdi_open(struct vdsk *vdsk)
 {
 	struct vdidsk *vdidsk = vdi_deref(vdsk);
 	struct vdi_header *header = &vdidsk->header;
-	int ret = 0;
-	uint32_t i, status;
 	uuid_t uuid_link, uuid_parent;
+	size_t nbytes;
+	off_t offset;
+	uint32_t i, status;
+	int ret = 0;
 
 #ifdef SMP
 	pthread_rwlock_init(&vdidsk->lock, NULL);
 #endif
 	vdidsk->vdsk = vdsk;
 
-	if (pread(vdsk->fd, header, sizeof(*header), 0) != sizeof(*header)) {
-		printf("Can't read VDI header\n");
+	if (pread_all(vdsk->fd, header, sizeof(*header), 0) != sizeof(*header)) {
+		printf("VDI: Cannot read VDI header\n");
 		printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
 		return EBADF;
 	}
@@ -138,72 +177,66 @@ vdi_open(struct vdsk *vdsk)
 	uuid_parent = header->uuid_parent;
 
 	if (header->signature != VDI_SIGNATURE) {
-		printf("Disk image is not VDI compatible\r\n");
+		printf("VDI: Disk image is not VDI compatible\r\n");
 		ret = EBADF;
 		goto open_err;
 	}
 	if (header->version_major != 1 || header->version_minor < 1) {
-		printf("VDI image version %u.%u not supported\r\n",
+		printf("VDI: Image version %u.%u not supported\r\n",
 			header->version_major, header->version_minor);
 		ret = ENXIO;
 		goto open_err;
 	}
 	if (header->sector_size != VDI_SECTOR_SIZE) {
-		printf("Invalid VDI sector size %u different from %u\r\n", header->sector_size, VDI_SECTOR_SIZE);
+		printf("VDI: Invalid sector size %u different from %u\r\n",
+			header->sector_size, VDI_SECTOR_SIZE);
 		ret = EBADF;
 		goto open_err;
 	}
-	if ((header->block_size & (header->block_size - 1)) != 0 || header->block_size < VDI_SECTOR_SIZE) {
-		printf("Invalid VDI block size %u not power of 2 or lower than sector size %u\r\n",
+	if ((header->block_size & (header->block_size - 1)) != 0 ||
+			header->block_size < VDI_SECTOR_SIZE) {
+		printf("VDI: Invalid block size %u not power of 2 or lower than sector size %u\r\n",
 			header->block_size, header->sector_size);
 		ret = EBADF;
 		goto open_err;
 	}
 	if ((uint64_t) header->blocks_total * header->block_size != header->disk_size) {
-		printf("Invalid VDI disk size %lu different from block size * number of blocks %lu\r\n",
+		printf("VDI: Invalid disk size %lu different from block size * number of blocks %lu\r\n",
 			header->disk_size, (uint64_t) header->blocks_total * header->block_size);
-		ret = EBADF;
-		goto open_err;
-	}
-	if ((header->block_size & (header->block_size - 1)) != 0 || header->block_size < VDI_SECTOR_SIZE) {
-		printf("Invalid VDI block size %u not power of 2 or lower than sector size %u\r\n",
-			header->block_size, header->sector_size);
 		ret = EBADF;
 		goto open_err;
 	}
 	/* TODO: support snapshots */
 	if (!uuid_is_nil(&uuid_link, &status) || !uuid_is_nil(&uuid_parent, &status)) {
-		printf("Unsupported VDI image snapshot\r\n");
+		printf("VDI: Unsupported image snapshot\r\n");
 		ret = ENXIO;
 		goto open_err;
 	}
-	
-	vdidsk->offset_block_array = header->offset_block_array;
-	vdidsk->offset_data = header->offset_data;
-	vdidsk->block_size = header->block_size;
-	vdidsk->blocks_total = header->blocks_total;
-	
-	vdidsk->block_array = calloc(vdidsk->blocks_total, sizeof(uint32_t));
-	if (!vdidsk->block_array) {
-		printf("Calloc failed for VDI block array\r\n");
+
+	vdidsk->block_array = calloc(vdidsk->header.blocks_total, sizeof(uint32_t));
+	if (vdidsk->block_array == NULL) {
+		printf("VDI: Calloc failed for block array\r\n");
 		ret = ENOMEM;
 		goto open_err;
 	}
-	if (pread(vdsk->fd, (char *) vdidsk->block_array, vdidsk->blocks_total * sizeof(uint32_t),
-			vdidsk->offset_block_array) != vdidsk->blocks_total * sizeof(uint32_t)) {
+	
+	nbytes = vdidsk->header.blocks_total * sizeof(uint32_t);
+	offset = vdidsk->header.offset_block_array;
+	
+	if (pread_all(vdsk->fd, (char *) vdidsk->block_array, nbytes, offset) != (ssize_t) nbytes) {
 		printf("Unable to read VDI block array\r\n");
 		printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
 		free(vdidsk->block_array);
 		goto open_err;
 	}
-	for (i = 0; i < vdidsk->blocks_total; i++) {
+	for (i = 0; i < vdidsk->header.blocks_total; i++) {
 		vdidsk->block_array[i] = le32toh(vdidsk->block_array[i]);
 	}
 	
 	return ret;
 	
 open_err:
-	DPRINTF("Exit open_err\r\n");
+	DPRINTF("VDI: Exit open_err\r\n");
 	return ret;
 }
 
@@ -218,22 +251,25 @@ vdi_close(struct vdsk *vdsk)
 }
 
 static ssize_t
-vdi_readv(struct vdsk *vdsk, const struct iovec *iov,
-    int iovcnt, off_t offset)
+vdi_readv(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 {
 	struct vdidsk *vdidsk = vdi_deref(vdsk);
-	size_t rem, bytes_to_read, bytes_remaining, iov_offset;
+	off_t read_off;
 	ssize_t bytes_read;
-	uint32_t block_index, iov_index, block_offset;
+	size_t rem, bytes_to_read, bytes_remaining, iov_offset, nbytes;
+	uint32_t block_index, iov_index, block_offset, block_val;
+	uint32_t offset_data, block_size;
 	int i;
+	char *base;
+
+	offset_data = vdidsk->header.offset_data;
+	block_size = vdidsk->header.block_size;
 
 	iov_index = 0;
 	iov_offset = 0;
 	rem = 0;
 
-#ifdef SMP
-	pthread_rwlock_rdlock(&vdidsk->lock);
-#endif
+	lock_rdlock(&vdidsk->lock);
 	
 	for (i = 0; i < iovcnt; i++)
 		rem += iov[i].iov_len;
@@ -245,48 +281,38 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov,
 	DPRINTF("----\r\n");
 	DPRINTF("capacity: %lu\r\n", vdsk->media_size);
 	DPRINTF("sector_size: %d\r\n", vdsk->sector_size);
-	DPRINTF("block_size: %u\r\n", vdidsk->block_size);
-	DPRINTF("blocks_total: %u\r\n", vdidsk->blocks_total);
+	DPRINTF("block_size: %u\r\n", block_size);
+	DPRINTF("blocks_total: %u\r\n", vdidsk->header.blocks_total);
 	DPRINTF("blocks_allocated: %u\r\n", vdidsk->header.blocks_allocated);
 	DPRINTF("=================================\r\n");
 
 	if (offset < 0) {
 		errno = EINVAL;
-		printf("Exit with offset < 0; offset = %ld\r\n", offset);
-		
-#ifdef SMP
-		pthread_rwlock_unlock(&vdidsk->lock);
-#endif
-		
+		printf("VDI: Read with offset < 0; offset = %ld\r\n", offset);
+		lock_unlock(&vdidsk->lock);	
 		return -1;
 	}
 	
 	while (rem > 0) {
-		block_index = offset / vdidsk->block_size;
-		block_offset = offset % vdidsk->block_size;
-		bytes_to_read = MIN((size_t) vdidsk->block_size - block_offset, rem);
+		block_index = offset / block_size;
+		block_offset = offset % block_size;
+		bytes_to_read = MIN((size_t) block_size - block_offset, rem);
 		
 		bytes_remaining = bytes_to_read;
 		
-		DPRINTF("Block index: %u value : %u\r\n", block_index, vdidsk->block_array[block_index]);
-		if (vdidsk->block_array[block_index] == VDI_BLOCK_FREE) {
-			/* Random data, so we can emulate writing in the iovs */
-			DPRINTF("Accessed unallocated block %u\r\n", block_index);
+		block_val = vdidsk->block_array[block_index];
+		
+		DPRINTF("Block index: %u value : %u\r\n", block_index, block_val);
+		
+		if (block_val == VDI_BLOCK_FREE || block_val == VDI_BLOCK_ZERO) {
+			/* Unallocated or zero block */
+			DPRINTF("Accessed %s block %u\r\n",
+				block_val == VDI_BLOCK_FREE ? "unallocated" : "free", block_index);
 			while (bytes_remaining > 0) {
 				bytes_read = MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining);
-				iov_offset += bytes_read;
-				if (iov_offset == iov[iov_index].iov_len) {
-					iov_index++;
-					iov_offset = 0;
-				}
-				bytes_remaining -= bytes_read;
-			}
-		} else if (vdidsk->block_array[block_index] == VDI_BLOCK_ZERO) {
-			/* Block filled with zeros */
-			DPRINTF("Accessed zero block %u\r\n", block_index);
-			while (bytes_remaining > 0) {
-				bytes_read = MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining);
-				memset((char *) iov[iov_index].iov_base + iov_offset, 0, bytes_read);
+				/* Fill with zero if zero block, otherwise do nothing */
+				if (block_val == VDI_BLOCK_ZERO)
+					memset((char *) iov[iov_index].iov_base + iov_offset, 0, bytes_read);
 				iov_offset += bytes_read;
 				if (iov_offset == iov[iov_index].iov_len) {
 					iov_index++;
@@ -296,17 +322,15 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov,
 			}
 		} else {
 			/* Normal block */
-			DPRINTF("Accessed block %u phys offset: %#x block offset: %#x\r\n",
-				block_index, vdidsk->offset_data +
-				vdidsk->block_array[block_index] * vdidsk->block_size,
-				block_offset);
-			while (bytes_remaining > 0) {
-				bytes_read = pread(vdsk->fd,
-								(char *) iov[iov_index].iov_base + iov_offset,
-								MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining),
-								vdidsk->offset_data + vdidsk->block_array[block_index] *
-									vdidsk->block_size + block_offset);
+			DPRINTF("Accessed block %u phys offset: %#lx block offset: %#x\r\n",
+				block_index, (off_t) block_val * block_size + offset_data, block_offset);
 
+			while (bytes_remaining > 0) {
+				nbytes = MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining);
+				read_off = (off_t) block_val * block_size + offset_data + block_offset;
+				base = (char *) iov[iov_index].iov_base + iov_offset;
+				bytes_read = pread_all(vdsk->fd, base, nbytes, read_off);
+				
 				DPRINTF("%s: read %#lx iov_index %u iov_len %#lx iov_offset "
 					"%#lx block_index %u bytes_to_read %#lx bytes_read_so_far %#lx\r\n",
 					__func__, bytes_read, iov_index, iov[iov_index].iov_len,
@@ -315,11 +339,7 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov,
 				
 				if (bytes_read == -1) {
 					printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
-					
-#ifdef SMP
-					pthread_rwlock_unlock(&vdidsk->lock);
-#endif
-					
+					lock_unlock(&vdidsk->lock);	
 					return -1;
 				}
 				
@@ -338,15 +358,12 @@ vdi_readv(struct vdsk *vdsk, const struct iovec *iov,
 	
 	DPRINTF("%s: finished rem: %#lx\r\n", __func__, rem);
 
-#ifdef SMP
-	pthread_rwlock_unlock(&vdidsk->lock);
-#endif
-
+	lock_unlock(&vdidsk->lock);	
 	return rem;
 }
 
-static int is_zero_write(const struct iovec *iov, uint32_t *iov_index,
-	size_t *iov_offset, size_t size)
+static bool
+is_zero_write(const struct iovec *iov, uint32_t *iov_index, size_t *iov_offset, size_t size)
 {
 	size_t curr_iov_offset = *iov_offset;
 	size_t curr_iov_index = *iov_index;
@@ -358,7 +375,7 @@ static int is_zero_write(const struct iovec *iov, uint32_t *iov_index,
 		buf = (char *) iov[curr_iov_index].iov_base + curr_iov_offset;
 		bytes_to_check = MIN(iov[curr_iov_index].iov_len - curr_iov_offset, size);
 		if (buf[0] != 0 || memcmp(buf, buf + 1, bytes_to_check - 1))
-			return 0;
+			return false;
 		curr_iov_offset += bytes_to_check;
 		if (curr_iov_offset == iov[curr_iov_index].iov_len) {
 			curr_iov_index++;
@@ -369,22 +386,24 @@ static int is_zero_write(const struct iovec *iov, uint32_t *iov_index,
 	*iov_offset = curr_iov_offset;
 	*iov_index = curr_iov_index;
 	
-	return 1;
+	return true;
 }
 
 
 static ssize_t
-vdi_writev(struct vdsk *vdsk, const struct iovec *iov,
-    int iovcnt, off_t offset)
+vdi_writev(struct vdsk *vdsk, const struct iovec *iov, int iovcnt, off_t offset)
 {
 	struct vdidsk *vdidsk = vdi_deref(vdsk);
-	size_t rem, bytes_to_write, bytes_remaining, iov_offset;
+	off_t write_off;
 	ssize_t bytes_written;
-	uint32_t block_index, iov_index, block_offset;
+	size_t rem, bytes_to_write, bytes_remaining, iov_offset, nbytes;
+	uint32_t block_index, iov_index, block_offset, block_val, *buf;
+	uint32_t offset_data, block_size; 
 	int i, nr_allocated_blocks, starting_block_index;
-	uint32_t *buf;
-	ssize_t size;
+	char *base;
 
+	offset_data = vdidsk->header.offset_data;
+	block_size = vdidsk->header.block_size;
 
 	iov_index = 0;
 	iov_offset = 0;
@@ -392,9 +411,7 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov,
 	nr_allocated_blocks = 0;
 	starting_block_index = 0;
 
-#ifdef SMP
-	pthread_rwlock_wrlock(&vdidsk->lock);
-#endif
+	lock_wrlock(&vdidsk->lock);
 	
 	for (i = 0; i < iovcnt; i++)
 		rem += iov[i].iov_len;
@@ -406,34 +423,34 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov,
 	DPRINTF("----\r\n");
 	DPRINTF("capacity: %lu\r\n", vdsk->media_size);
 	DPRINTF("sector_size: %d\r\n", vdsk->sector_size);
-	DPRINTF("block_size: %u\r\n", vdidsk->block_size);
-	DPRINTF("blocks_total: %u\r\n", vdidsk->blocks_total);
+	DPRINTF("block_size: %u\r\n", block_size);
+	DPRINTF("blocks_total: %u\r\n", vdidsk->header.blocks_total);
 	DPRINTF("blocks_allocated: %u\r\n", vdidsk->header.blocks_allocated);
 	DPRINTF("=================================\r\n");
 
 	if (offset < 0) {
 		errno = EINVAL;
 		printf("Exit with offset < 0; offset = %ld\r\n", offset);
-		
-#ifdef SMP
-		pthread_rwlock_unlock(&vdidsk->lock);
-#endif
-		
+		lock_unlock(&vdidsk->lock);
 		return -1;
 	}
 	
 	while (rem > 0) {
-		block_index = offset / vdidsk->block_size;
-		block_offset = offset % vdidsk->block_size;
-		bytes_to_write = MIN((size_t) vdidsk->block_size - block_offset, rem);
+		block_index = offset / block_size;
+		block_offset = offset % block_size;
+		bytes_to_write = MIN((size_t) block_size - block_offset, rem);
 		
 		bytes_remaining = bytes_to_write;
 		
-		if (vdidsk->block_array[block_index] == VDI_BLOCK_FREE ||
-			vdidsk->block_array[block_index] == VDI_BLOCK_ZERO) {
+		block_val = vdidsk->block_array[block_index];
+		
+		DPRINTF("Block index: %u value : %u\r\n", block_index, block_val);
+		
+		if (block_val == VDI_BLOCK_FREE || block_val == VDI_BLOCK_ZERO) {
+			DPRINTF("Trying to write to %s block %u\r\n",
+				block_val == VDI_BLOCK_FREE ? "unallocated" : "zero", block_index);
 			/* If writing only zeros, just mark the block as a zero block */
 			if (is_zero_write(iov, &iov_index, &iov_offset, bytes_to_write)) {
-				DPRINTF("Zero write to unallocated or free block %u\r\n", block_index);
 				DPRINTF("Marking block %u as zero block\r\n", block_index);
 				vdidsk->block_array[block_index] = VDI_BLOCK_ZERO;
 				rem -= bytes_to_write;
@@ -441,35 +458,34 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov,
 				continue;
 			} else {
 			/* Writing non zero, so allocate a new block */
-			if (ftruncate(vdsk->fd, vdidsk->offset_data +
-					vdidsk->header.blocks_allocated * vdidsk->block_size) < 0) {
+			DPRINTF("Truncating file to %lu bytes\n",
+				(off_t) vdidsk->header.blocks_allocated * block_size + offset_data);
+
+			if (ftruncate(vdsk->fd,
+				(off_t) vdidsk->header.blocks_allocated * block_size + offset_data) < 0) {
 				printf("%s: failed to allocate new block\r\n", __func__);
 				printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
-					
-#ifdef SMP
-				pthread_rwlock_unlock(&vdidsk->lock);
-#endif
-					
+				lock_unlock(&vdidsk->lock);
 				return -1;
 			}
 			
-			vdidsk->block_array[block_index] = vdidsk->header.blocks_allocated++;
+			block_val = vdidsk->header.blocks_allocated++;
+			vdidsk->block_array[block_index] = block_val;
 			if (starting_block_index == 0)
 				starting_block_index = block_index;
 			nr_allocated_blocks++;
 			}
 		}
 		/* Normal block */
-		DPRINTF("Accessed block %u phys offset: %#x block offset: %#x\r\n",
-			block_index, vdidsk->offset_data +
-			vdidsk->block_array[block_index] * vdidsk->block_size,
-			block_offset);
+		DPRINTF("Accessed block %u phys offset: %#lx block offset: %#x\r\n",
+				block_index, (off_t) block_val * block_size + offset_data, block_offset);
+
 		while (bytes_remaining > 0) {
-			bytes_written = pwrite(vdsk->fd,
-							(char *) iov[iov_index].iov_base + iov_offset,
-							MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining),
-							vdidsk->offset_data + vdidsk->block_array[block_index] *
-								vdidsk->block_size + block_offset);
+			nbytes = MIN(iov[iov_index].iov_len - iov_offset, bytes_remaining);
+			write_off = (off_t) block_val * block_size + offset_data + block_offset;
+			base = (char *) iov[iov_index].iov_base + iov_offset;
+			
+			bytes_written = pwrite_all(vdsk->fd, base, nbytes, write_off);
 			
 			DPRINTF("%s: wrote %#lx iov_index %u iov_len %#lx iov_offset "
 				"%#lx block_index %u bytes_to_write %#lx bytes_read_so_far %#lx\r\n",
@@ -479,11 +495,7 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov,
 			
 			if (bytes_written == -1) {
 				printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
-					
-#ifdef SMP
-				pthread_rwlock_unlock(&vdidsk->lock);
-#endif
-					
+				lock_unlock(&vdidsk->lock);
 				return -1;
 			}
 			
@@ -504,43 +516,41 @@ vdi_writev(struct vdsk *vdsk, const struct iovec *iov,
 	if (nr_allocated_blocks > 0) {
 		/* Update header in file and block array if we allocate any blocks */
 		
-		buf = calloc(nr_allocated_blocks, sizeof(*buf));
-		if (!buf) {
+		buf = malloc(nr_allocated_blocks * sizeof(*buf));
+		if (buf == NULL) {
 			printf("%s: could not calloc buf\r\n", __func__);
-			pthread_rwlock_unlock(&vdidsk->lock);
+			lock_unlock(&vdidsk->lock);
 			return -1;
 		}
 		
 		buf[0] = htole32(vdidsk->header.blocks_allocated);
-		size = sizeof(uint32_t);
-		if (pwrite(vdsk->fd, &buf[0], size,
-				offsetof(struct vdi_header, blocks_allocated)) != size) {
+		nbytes = sizeof(uint32_t);
+		if (pwrite_all(vdsk->fd, &buf[0], nbytes,
+				offsetof(struct vdi_header, blocks_allocated)) != (ssize_t) nbytes) {
 			printf("%s: could not write block_allocated in header\r\n", __func__);
 			printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
 			free(buf);
-			pthread_rwlock_unlock(&vdidsk->lock);
+			lock_unlock(&vdidsk->lock);
 			return -1;
 		}
 		
 		for (i = 0; i < nr_allocated_blocks; i++)
 			buf[i] = htole32(vdidsk->block_array[i + starting_block_index]);
 		
-		size = nr_allocated_blocks * sizeof(uint32_t);
-		if (pwrite(vdsk->fd, buf, size, vdidsk->offset_block_array +
-				starting_block_index * sizeof(uint32_t)) != size) {
+		nbytes = nr_allocated_blocks * sizeof(uint32_t);
+		if (pwrite_all(vdsk->fd, buf, nbytes, (size_t) vdidsk->header.offset_block_array +
+				starting_block_index * sizeof(uint32_t)) != (ssize_t) nbytes) {
 			printf("%s: could not write new blocks in block_array\r\n", __func__);
 			printf("%s: (%d) %s\r\n", __func__, errno, strerror(errno));
 			free(buf);
-			pthread_rwlock_unlock(&vdidsk->lock);
+			lock_unlock(&vdidsk->lock);
 			return -1;
 		}
 		
 		free(buf);
 	}
 
-#ifdef SMP
-	pthread_rwlock_unlock(&vdidsk->lock);
-#endif
+	lock_unlock(&vdidsk->lock);
 
 	return rem;
 }

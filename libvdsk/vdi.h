@@ -30,6 +30,12 @@
 
 #include <uuid.h>
 
+#define VDI_SIGNATURE 0xbeda107f
+#define VDI_SECTOR_SIZE 512
+
+#define VDI_BLOCK_FREE ((uint32_t) ~0)
+#define VDI_BLOCK_ZERO ((uint32_t) ~1)
+
 /* VDI PREHEADER AND HEADER - VERSION 1.1 */
 struct vdi_header {
 	/* PREHEADER */
@@ -41,7 +47,7 @@ struct vdi_header {
 	/* HEADER */
 	uint32_t	header_size; /* Size of header in bytes */
 	uint32_t	image_type; /* Preallocated or dynamically growing image */
-	uint32_t	image_flags;
+	uint32_t	image_flags; /* Unused */
 	char		image_comment[256]; /* For human eyes only */
 	uint32_t	offset_block_array; /* Offset for the block array from the beginning of file */
 	uint32_t	offset_data; /* Offset for block data from the beginning of file */
@@ -65,11 +71,6 @@ struct vdidsk {
 	struct vdi_header header;
 	struct vdsk *vdsk;
 	uint32_t 	*block_array;
-	
-	uint32_t 	offset_block_array;
-	uint32_t 	offset_data;
-	uint32_t 	block_size;
-	uint32_t 	blocks_total;
 	
 #ifdef SMP
 	pthread_rwlock_t lock;
